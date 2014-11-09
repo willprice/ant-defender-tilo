@@ -11,7 +11,7 @@ in port  buttons = PORT_BUTTON;
 out port speaker = PORT_SPEAKER;
 
 typedef enum { clockwise, anticlockwise } Direction;
-typedef enum { false, true } bool;
+typedef enum { false=0, true=1 } bool;
 typedef int Position;
 
 //DISPLAYS an LED pattern in one quadrant of the clock LEDs
@@ -25,7 +25,9 @@ int showLED(out port p, chanend fromVisualiser) {
 }
 
 int calculate_led_position(int i, int j, Position user_position, Position attacker_position, int quadrant_index) {
-    return j*(user_position/3==quadrant_index) + i*(attacker_position/3==quadrant_index);
+    bool is_user_position_in_quadrant = user_position/3 == quadrant_index;
+    bool is_attacker_position_in_quadrant = attacker_position/3 == quadrant_index;
+    return j*is_user_position_in_quadrant | i*is_attacker_position_in_quadrant;
 }
 //PROCESS TO COORDINATE DISPLAY of LED Ants
 void visualiser(chanend fromUserAnt, chanend fromAttackerAnt, chanend toQuadrant0, chanend toQuadrant1, chanend toQuadrant2, chanend toQuadrant3) {
@@ -65,16 +67,6 @@ void playSound(unsigned int wavelength, out port speaker) {
     }
 }
 
-//READ BUTTONS and send to userAnt
-void buttonListener(in port buttons, out port spkr, chanend toUserAnt) {
-    int button_pattern;
-    while (1) {
-        buttons when pinsneq(0b1111) :> button_pattern;   // check if some buttons are pressed
-        playSound(2*100*1000, spkr);   // play sound
-        toUserAnt <: button_pattern;            // send button pattern to userAnt
-    }
-}
-
 //WAIT function
 void waitMoment() {
     timer tmr;
@@ -82,6 +74,17 @@ void waitMoment() {
     tmr :> waitTime;
     waitTime += 10000000;
     tmr when timerafter(waitTime) :> void;
+}
+
+//READ BUTTONS and send to userAnt
+void buttonListener(in port buttons, out port spkr, chanend toUserAnt) {
+    int button_pattern;
+    while (1) {
+        buttons when pinsneq(0b1111) :> button_pattern;   // check if some buttons are pressed
+        playSound(2*100*1000, spkr);   // play sound
+        waitMoment();
+        toUserAnt <: button_pattern;            // send button pattern to userAnt
+    }
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -109,7 +112,6 @@ void userAnt(chanend fromButtons, chanend toVisualiser, chanend toController) {
     toVisualiser <: userAntPosition;         //show initial position
 
     while (1) {
-        toController :> wasMoveValid; // Wait for instruction from controller
         fromButtons :> buttonInput;
         if (buttonInput == 0b1110) {
             attemptedAntPosition = move_clockwise(userAntPosition);
@@ -148,7 +150,6 @@ void attackerAnt(chanend toVisualiser, chanend toController) {
 
     while (1) {
         waitMoment();
-        toController :> moveForbidden; // Wait for instruction from controller
         switch(currentDirection) {
         case clockwise:
             attemptedAntPosition = move_clockwise(attackerAntPosition);
@@ -180,11 +181,8 @@ void controller(chanend attackerChannel, chanend userChannel) {
     Position lastReportedUserAntPosition = 11;      //position last reported by userAnt
     Position lastReportedAttackerAntPosition = 5;   //position last reported by attackerAnt
     unsigned int attempt = 0;
-    int go = 1;
-    attackerChannel <: go;
-    userChannel <: go;
     userChannel :> attempt;                                //start game when user moves
-    userChannel <: 1;                                      //forbid first move
+    userChannel <: false;                                      //forbid first move
     while (1) {
         select {
         case attackerChannel :> attempt:
@@ -196,8 +194,16 @@ void controller(chanend attackerChannel, chanend userChannel) {
             userChannel <: is_move_valid(attempt, lastReportedAttackerAntPosition);
             break;
         }
-        attackerChannel <: 1;
-        userChannel <: 1;
+        select {
+        case attackerChannel :> attempt:
+            lastReportedAttackerAntPosition = attempt;
+            attackerChannel <: is_move_valid(attempt, lastReportedUserAntPosition);
+            break;
+        case userChannel :> attempt:
+            lastReportedUserAntPosition = attempt;
+            userChannel <: is_move_valid(attempt, lastReportedAttackerAntPosition);
+            break;
+        }
     }
 }
 
